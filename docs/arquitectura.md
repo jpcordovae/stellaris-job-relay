@@ -27,7 +27,11 @@ imágenes) necesitan mover gigabytes entre jobs, rápido y dentro de su propia r
 - [ ] ¿Integridad: hash por chunk y por blob (BLAKE3 / SHA-256)?
 
 ### Persistencia
-- [ ] ¿Backend: disco local con mmap, o almacenamiento externo (S3/MinIO)?
+- [x] **Decidido (dueño, 2026-11-08):** los datos se guardan en memoria siempre que sea
+      posible, como binario opaco sin interpretar su formato, con un protocolo propio.
+      Propuesta en [protocolo.md](protocolo.md).
+- [ ] ¿Qué hacer cuando la memoria no alcanza o el servidor se reinicia? (D1 y D2 en
+      protocolo.md)
 - [ ] ¿Política de retención y expiración (TTL por run)?
 - [ ] ¿Un nodo, o varios con replicación?
 
