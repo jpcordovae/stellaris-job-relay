@@ -9,6 +9,41 @@ Estado: **propuesta**. Nada se implementa hasta que el dueño lo apruebe.
 - Se define un **protocolo propio**, tomando ideas de Protocol Buffers y de los
   protocolos construidos sobre ZeroMQ.
 
+## 1b. Alcance: un solo workflow run (dueño, 2026-11-08)
+
+El servicio guarda datos **producidos y consumidos dentro de un mismo workflow run**.
+El traspaso entre runs distintos se verá más adelante (§9).
+
+Consecuencias de diseño:
+
+- **El espacio de claves es el run, no el intento.** Al usar "Re-run failed jobs",
+  GitHub inicia un nuevo intento solo para los jobs fallidos y sus dependientes, y
+  reutiliza las salidas de los jobs exitosos del intento anterior. Por eso un job del
+  intento 2 debe poder leer lo que escribió un job exitoso del intento 1. Clave:
+  `org/repo/run_id/nombre`; el intento queda como dato del blob, no como parte de la
+  clave.
+- **Reescritura en reintentos:** si un job reintentado vuelve a escribir la misma clave,
+  la versión nueva reemplaza a la anterior al confirmar (COMMIT). Un GET siempre entrega
+  la última versión confirmada.
+- **El alcance se impone con el token, no con la confianza en el cliente:** el token
+  OIDC del job trae el repositorio y el run; el servidor fija el prefijo desde ahí. Un
+  job no puede leer ni escribir en otro run.
+- **Vida de los datos = vida del run (decidido, D8).** Los datos no sobreviven al
+  workflow run: se liberan apenas termina. Como respaldo, un tope de vida absoluto: un
+  workflow run en runners propios dura como máximo 35 días según los límites de GitHub.
+- **Consecuencia que hay que comunicar al usuario:** GitHub permite "Re-run failed
+  jobs" después de que el run terminó. En ese caso los datos de los jobs exitosos ya no
+  existen, y el job re-ejecutado no los encontrará. El servidor responde con un error
+  claro (clave de un run ya terminado) y el cliente muestra en el log: *"use Re-run all
+  jobs"*. Esto va en la documentación de uso del producto.
+- **Cómo se entera el servidor de que el run terminó:** el servidor está en la red local
+  del cliente y no recibe webhooks desde internet. Opciones: (a) un paso final de
+  limpieza en el workflow (`if: always()`), (b) el servidor consulta el estado del run
+  en la API de GitHub, (c) ambas. Recomendado: (c), con el tope absoluto como red de
+  seguridad.
+- **El reinicio del servidor (D2) pesa menos:** solo afecta a los runs en curso, no a
+  datos históricos.
+
 ## 2. Qué tomar de Protocol Buffers (y qué no)
 
 ### Se toma
@@ -128,7 +163,7 @@ con digest. Si se corta, un GET nuevo con el último offset recibido reanuda.
 
 - CURVE en todas las conexiones; ZAP valida al cliente.
 - En HELLO, el job presenta su token OIDC de GitHub; el servidor lo verifica y fija el
-  espacio de claves `org/repo/run_id/intento/`. El cliente no puede escribir ni leer
+  espacio de claves `org/repo/run_id/` (ver §1b). El cliente no puede escribir ni leer
   fuera de su run (ni de otro repositorio).
 - BLAKE3 del blob completo en COMMIT y en END. El campo `alg_digest` permite cambiar
   de algoritmo sin romper el protocolo.
@@ -144,6 +179,16 @@ con digest. Si se corta, un GET nuevo con el último offset recibido reanuda.
 | D5 | Hash por trozo además del hash total | Sí / no |
 | D6 | Autenticación | OIDC de GitHub (recomendado) o claves CURVE por runner |
 | D7 | Codificador de metadatos | Escrito a mano (recomendado: es pequeño) o generado (estilo zproto) |
+| D8 | ~~¿Cuánto se guardan los datos después de que el run termina?~~ | **Decidido (dueño, 2026-11-08): los datos no sobreviven al workflow run.** Se liberan al terminar, sin ventana de gracia |
+
+## 9. Reservado para el futuro: traspaso entre runs
+
+Fuera de alcance por ahora (dueño, 2026-11-08). Para no tener que romper el protocolo
+después, quedan reservados:
+- comandos 0x40–0x4F (exportar e importar entre runs);
+- campos de metadatos 13–20;
+- en la clave, el prefijo del run es fijado por el servidor; un futuro "alcance" de
+  exportación será un espacio separado, nunca un permiso para leer otro run.
 
 ## Fuentes
 
@@ -153,3 +198,5 @@ con digest. Si se corta, un GET nuevo con el último offset recibido reanuda.
 - 25/ZMTP-CURVE: https://rfc.zeromq.org/spec/25/
 - 19/FILEMQ: https://rfc.zeromq.org/spec/19/ — 35/FILEMQ: https://rfc.zeromq.org/spec/35/
 - zguide, capítulo 7: https://zguide.zeromq.org/docs/chapter7/
+- GitHub, re-ejecutar workflows y jobs: https://docs.github.com/en/enterprise-server@3.14/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs
+- GitHub, límites de runners propios: https://docs.github.com/en/enterprise-server@3.14/actions/reference/usage-limits-for-self-hosted-runners
