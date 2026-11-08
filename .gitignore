@@ -1,0 +1,20 @@
+# Build
+build/
+out/
+cmake-build-*/
+compile_commands.json
+
+# Dependencias
+vcpkg_installed/
+.conan/
+
+# Secretos / claves CurveZMQ
+*.key
+*.key_secret
+.env
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+*.swp
