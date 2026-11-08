@@ -32,7 +32,7 @@ imágenes) necesitan mover gigabytes entre jobs, rápido y dentro de su propia r
       Propuesta en [protocolo.md](protocolo.md).
 - [ ] ¿Qué hacer cuando la memoria no alcanza o el servidor se reinicia? (D1 y D2 en
       protocolo.md)
-- [x] **Decidido (dueño, 2026-11-08):** alcance de un solo workflow run; los datos
+- [x] **Decidido (dueño, 2026-11-08):** solo mensajes entre jobs del mismo workflow run, identificados por run_id y job_id; los datos
       viven lo que vive el run. Traspaso entre runs: más adelante. Ver §1b de
       [protocolo.md](protocolo.md).
 - [x] **Decidido (dueño, 2026-11-08):** los datos no sobreviven al workflow run (D8).
