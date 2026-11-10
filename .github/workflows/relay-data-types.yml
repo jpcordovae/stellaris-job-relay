@@ -116,28 +116,12 @@ jobs:
           echo "| Nested JSON (null, bool, floats, 2^53+1, unicode, deep arrays) queried with jq and Python | ✅ |" >> "$GITHUB_STEP_SUMMARY"
           echo "| $(du -h big.out | cut -f1) JSON document (250,000 rows) | ✅ byte-identical, parsed |" >> "$GITHUB_STEP_SUMMARY"
 
-      # ------------------------------------------------------------ GitHub's own limit, for comparison
-      - id: native
-        name: "Native GitHub step output with 3 MB (for comparison)"
-        continue-on-error: true
-        run: |
-          big=$(head -c 3000000 /dev/zero | tr '\0' 'a')
-          echo "big=$big" >> "$GITHUB_OUTPUT"
-
-      - id: native-get
-        name: "Native: read the 3 MB step output through env"
-        continue-on-error: true
-        env:
-          BIG: ${{ steps.native.outputs.big }}
-        run: test "${#BIG}" -eq 3000000
-
       - id: relay-big
-        name: "Relay: the same 3 MB value"
+        name: "Relay: a 3 MB value"
         run: |
           head -c 3000000 /dev/zero | tr '\0' 'a' | jrelay put --name big-value
           test "$(jrelay get --step relay-big --name big-value | wc -c)" -eq 3000000
-          echo "| 3 MB value: native step output → env | write: ${{ steps.native.outcome }}, read: ${{ steps.native-get.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 3 MB value: relay | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 3 MB single value through the relay | ✅ |" >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------ environment variables
       - id: env-put
@@ -182,11 +166,11 @@ jobs:
           echo "replicas=$(jq -r .replicas config.json)" >> "$GITHUB_OUTPUT"
 
       - id: bridge-use
-        name: "Use them with the usual ${{ '{{' }} steps.x.outputs.y {{ '}}' }} syntax"
+        name: "Use them with the usual steps.x.outputs.y syntax"
         run: |
           test "${{ steps.bridge.outputs.region }}" = "sa-east-1"
           test "${{ steps.bridge.outputs.replicas }}" -eq 3
-          echo "| Relay data → step outputs → \`\${{ steps.x.outputs.y }}\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Relay data → step outputs → steps.x.outputs.y | ✅ |" >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------ secrets
       - id: secret-put
@@ -277,6 +261,27 @@ jobs:
           PY
           test "$(jrelay get --step lists --name py-result | jq .replicas)" -eq 6
           echo "| Python reads and writes through the CLI | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ GitHub's own limit, for comparison (last on purpose:
+      # GitHub fails the template before the step runs, which ignores continue-on-error)
+      - id: native
+        name: "Native GitHub step output with 3 MB (for comparison)"
+        continue-on-error: true
+        run: |
+          big=$(head -c 3000000 /dev/zero | tr '\0' 'a')
+          echo "big=$big" >> "$GITHUB_OUTPUT"
+
+      - id: native-get
+        name: "Native: read the 3 MB step output through env"
+        continue-on-error: true
+        env:
+          BIG: ${{ steps.native.outputs.big }}
+        run: test "${#BIG}" -eq 3000000
+
+      - name: "Native comparison result"
+        if: always()
+        run: |
+          echo "| Same 3 MB value as a native step output | write: ${{ steps.native.outcome }}, read: ${{ steps.native-get.outcome }} (GitHub: \"Maximum object size exceeded\") |" >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------ end of run
       - name: Release and stop
