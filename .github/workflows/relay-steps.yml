@@ -1,0 +1,77 @@
+# Real GitHub Actions test of the relay BETWEEN STEPS of one job.
+# The relay runs inside the job (127.0.0.1); jobs on GitHub-hosted runners
+# cannot reach each other, so the between-jobs test needs a self-hosted runner.
+name: relay-steps
+
+on:
+  push:
+    branches: [prueba-github]
+
+jobs:
+  steps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      JRELAY_ENDPOINT: tcp://127.0.0.1:7700
+      JRELAY_TOKEN: dev:${{ github.run_id }}:${{ github.run_attempt }}   # INSECURE dev mode
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libzmq3-dev cppzmq-dev doctest-dev
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          echo "$PWD/build" >> "$GITHUB_PATH"
+
+      - name: Unit and end-to-end tests
+        run: ./build/jrelay_tests
+
+      - name: Start the relay
+        run: |
+          nohup jrelay-server --dev-auth --bind tcp://127.0.0.1:7700 --memory-limit 1G > relay.log 2>&1 &
+          echo $! > relay.pid
+          sleep 1
+          echo "GITHUB_JOB=$GITHUB_JOB run_id=${{ github.run_id }} attempt=${{ github.run_attempt }}"
+
+      - id: produce
+        name: "Step produce: put 256 MiB (job and step taken from GITHUB_JOB / GITHUB_ACTION)"
+        run: |
+          echo "GITHUB_ACTION=$GITHUB_ACTION"
+          head -c 256M /dev/urandom > data.bin
+          echo "sha=$(sha256sum data.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          jrelay put --name data.bin --file data.bin
+          rm data.bin
+
+      - id: consume
+        name: "Step consume: get it back in a later step of the same job"
+        run: |
+          jrelay get --step produce --name data.bin --out got.bin
+          test "$(sha256sum got.bin | cut -d' ' -f1)" = "${{ steps.produce.outputs.sha }}"
+          echo "OK: identical to what step produce uploaded"
+
+      - id: pipe
+        name: "Step pipe: stdin upload without a declared size"
+        run: |
+          seq 1 2000000 | jrelay put --name numbers
+          jrelay get --step pipe --name numbers | tail -1 | grep -qx 2000000
+          echo "OK: streamed upload works"
+
+      - name: "Release the run; a late read must fail with exit code 4"
+        run: |
+          jrelay release
+          set +e
+          jrelay get --step produce --name data.bin --out /dev/null
+          rc=$?
+          set -e
+          test "$rc" -eq 4
+          echo "OK: data released, clear error afterwards"
+
+      - name: Stop the relay
+        if: always()
+        run: |
+          kill -INT "$(cat relay.pid)" || true
+          sleep 1
+          cat relay.log
