@@ -1,0 +1,101 @@
+# Uses the relay exactly as another repository would: through
+# `uses: jpcordovae/stellaris-job-relay@v0`.
+name: relay-action
+
+on:
+  push:
+    branches: [prueba-github]
+
+permissions:
+  contents: read
+
+jobs:
+  first-use:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: start }
+
+      - id: make
+        run: |
+          head -c 50M /dev/urandom > app.bin
+          echo "sha=$(sha256sum app.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          jq -n '{region: "sa-east-1", replicas: 3, msg: "hola \"mundo\" $HOME ✓"}' > cfg.json
+
+      - id: put-file
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: put, step: make, name: app.bin, file: app.bin }
+
+      - uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: put, step: make, name: cfg, file: cfg.json }
+
+      - uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: put, step: make, name: version, value: "v1.4.2" }
+
+      - uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: put, step: make, name: token, value: "${{ secrets.GITHUB_TOKEN }}", mask: true }
+
+      - id: version
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: get, step: make, name: version }
+
+      - id: cfg
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: get, step: make, name: cfg }
+
+      - id: tok
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: get, step: make, name: token, mask: true }
+
+      - id: app
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: get, step: make, name: app.bin, out: got.bin }
+
+      - name: Check everything arrived and is usable
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          CFG: ${{ steps.cfg.outputs.value }}
+          TOK: ${{ steps.tok.outputs.value }}
+        run: |
+          test "$VERSION" = "v1.4.2"
+          test "$(jq -r .region <<< "$CFG")" = "sa-east-1"
+          test "$(jq -r .msg <<< "$CFG")" = 'hola "mundo" $HOME ✓'
+          test "$(sha256sum got.bin | cut -d' ' -f1)" = "${{ steps.make.outputs.sha }}"
+          test "${{ steps.app.outputs.size }}" = "52428800"
+          test "${{ steps.put-file.outputs.digest }}" = "${{ steps.app.outputs.digest }}"
+          echo "token seen as: $TOK"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" "https://api.github.com/repos/${{ github.repository }}")
+          echo "GitHub API with the relayed token: HTTP $code"
+          test "$code" = "200"
+          {
+            echo "| Through \`uses: jpcordovae/stellaris-job-relay@v0\` | Result |"
+            echo "|---|---|"
+            echo "| 50 MiB file (put file → get out) | ✅ identical, same BLAKE3 digest |"
+            echo "| Value \`v1.4.2\` → output \`value\` | ✅ |"
+            echo "| JSON with quotes, \`\$\`, unicode → output → jq | ✅ |"
+            echo "| GITHUB_TOKEN with \`mask: true\` → used against the API | ✅ HTTP $code, never shown |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - if: always()
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: release }
+
+  second-use:
+    needs: first-use
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Mark start
+        run: echo "t0=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: start }
+      - uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: put, step: s, name: n, value: "hola" }
+      - id: g
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: get, step: s, name: n }
+      - run: |
+          test "${{ steps.g.outputs.value }}" = "hola"
+          echo "| Second job: binary from the Actions cache, setup + put + get in $(( $(date +%s) - t0 )) s | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: release }
