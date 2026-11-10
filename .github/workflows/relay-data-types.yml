@@ -1,0 +1,288 @@
+# Real GitHub Actions test: every kind of data a workflow needs to pass between
+# steps, sent through the relay (opaque bytes, CURVE-encrypted transport).
+name: relay-data-types
+
+on:
+  push:
+    branches: [prueba-github]
+
+permissions:
+  contents: read   # the GITHUB_TOKEN passed through the relay can only read this repo
+
+jobs:
+  data-types:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      JRELAY_ENDPOINT: tcp://127.0.0.1:7700
+      JRELAY_TOKEN: dev:${{ github.run_id }}:${{ github.run_attempt }}   # INSECURE dev mode
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: setup
+        name: Build the relay and start it with CURVE encryption
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libzmq3-dev cppzmq-dev doctest-dev jq
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DJRELAY_BUILD_TESTS=OFF
+          cmake --build build -j
+          echo "$PWD/build" >> "$GITHUB_PATH"
+          keys=$(build/jrelay keygen)
+          echo "$keys" | awk '/^secret/{print $2}' > "$RUNNER_TEMP/server.key"
+          chmod 600 "$RUNNER_TEMP/server.key"
+          echo "JRELAY_SERVER_PUBLIC_KEY=$(echo "$keys" | awk '/^public/{print $2}')" >> "$GITHUB_ENV"
+          nohup build/jrelay-server --dev-auth --bind tcp://127.0.0.1:7700 --memory-limit 2G \
+            --curve-secret-file "$RUNNER_TEMP/server.key" > relay.log 2>&1 &
+          echo $! > relay.pid
+          sleep 1
+          grep -q "(CURVE)" relay.log
+          echo "| Case | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ scalars
+      - id: vars
+        name: "Put: strings, numbers, empty, tricky text, binary"
+        run: |
+          printf '%s' "v1.4.2"                          | jrelay put --name version
+          printf '%s' "42"                              | jrelay put --name int
+          printf '%s' "-17"                             | jrelay put --name negative
+          printf '%s' "3.14159265358979323846264338327" | jrelay put --name pi
+          printf '%s' "123456789012345678901234567890"  | jrelay put --name bigint
+          printf '%s' "true"                            | jrelay put --name flag
+          printf ''                                     | jrelay put --name empty
+          # Unicode, quotes, $vars, backticks, backslashes, CRLF and trailing blank lines
+          printf 'line 1\nlínea 2 — ñandú ✓ 日本 🚀\n  "double" '\''single'\'' $HOME `uname` \\ \r\n\n\n' > tricky.txt
+          jrelay put --name tricky --file tricky.txt
+          echo "tricky_sha=$(sha256sum tricky.txt | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          head -c 1M /dev/urandom > binary.bin          # contains NUL bytes: impossible in env vars
+          jrelay put --name binary --file binary.bin
+          echo "binary_sha=$(sha256sum binary.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - id: vars-get
+        name: "Get and use: strings, numbers, empty, tricky text, binary"
+        run: |
+          version=$(jrelay get --step vars --name version);   test "$version" = "v1.4.2"
+          int=$(jrelay get --step vars --name int);           test $((int * 2)) -eq 84
+          neg=$(jrelay get --step vars --name negative);      test $((neg + 17)) -eq 0
+          pi=$(jrelay get --step vars --name pi)
+          python3 -c "import decimal,sys; assert decimal.Decimal(sys.argv[1]) == decimal.Decimal('3.14159265358979323846264338327')" "$pi"
+          big=$(jrelay get --step vars --name bigint)
+          python3 -c "import sys; assert int(sys.argv[1]) + 1 == 123456789012345678901234567891" "$big"
+          flag=$(jrelay get --step vars --name flag);         [ "$flag" = true ]
+          test "$(jrelay get --step vars --name empty | wc -c)" -eq 0
+          jrelay get --step vars --name tricky --out tricky.out
+          test "$(sha256sum tricky.out | cut -d' ' -f1)" = "${{ steps.vars.outputs.tricky_sha }}"
+          jrelay get --step vars --name binary --out binary.out
+          test "$(sha256sum binary.out | cut -d' ' -f1)" = "${{ steps.vars.outputs.binary_sha }}"
+          echo "| Strings, ints, negatives, 30-digit decimals and integers, booleans, empty | ✅ exact, usable in arithmetic |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Unicode, quotes, \`\$\`, backticks, CRLF, trailing blank lines | ✅ byte-identical |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 1 MiB binary with NUL bytes | ✅ byte-identical |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ JSON
+      - id: json
+        name: "Put: nested JSON and a 25 MB JSON document"
+        run: |
+          jq -n '{
+            name: "despliegue ✓", version: "1.4.2", replicas: 3, ratio: 0.75,
+            big_int: 9007199254740993, nothing: null, enabled: true,
+            region: "sa-east-1",
+            nested: { list: [ {id: 1, name: "uno"}, {id: 2, name: "dos"}, {id: 3, name: "tres"} ],
+                      deep: { a: { b: { c: [1, [2, [3, [4]]]] } } } },
+            tags: ["a", "b", "c"]
+          }' > config.json
+          jrelay put --name config --file config.json
+          python3 - <<'PY'
+          import json, random
+          random.seed(1)
+          rows = [{"id": i, "sku": f"SKU-{i:07d}", "price": round(random.random() * 1000, 2),
+                   "tags": ["x", "y"], "ok": i % 2 == 0} for i in range(250_000)]
+          json.dump({"rows": rows}, open("big.json", "w"))
+          PY
+          ls -l big.json
+          jrelay put --name big --file big.json
+          echo "big_sha=$(sha256sum big.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - id: json-get
+        name: "Get and query JSON with jq and Python"
+        run: |
+          jrelay get --step json --name config | jq -e '.nested.list[2].name == "tres" and .replicas == 3 and .nothing == null and (.nested.deep.a.b.c[1][1][1][0] == 4)'
+          # Large integers keep their exact value (2^53 + 1, beyond float precision)
+          jrelay get --step json --name config | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['big_int'] == 9007199254740993"
+          jrelay get --step json --name big --out big.out
+          test "$(sha256sum big.out | cut -d' ' -f1)" = "${{ steps.json.outputs.big_sha }}"
+          test "$(jq '.rows | length' big.out)" -eq 250000
+          echo "| Nested JSON (null, bool, floats, 2^53+1, unicode, deep arrays) queried with jq and Python | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| $(du -h big.out | cut -f1) JSON document (250,000 rows) | ✅ byte-identical, parsed |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ GitHub's own limit, for comparison
+      - id: native
+        name: "Native GitHub step output with 3 MB (for comparison)"
+        continue-on-error: true
+        run: |
+          big=$(head -c 3000000 /dev/zero | tr '\0' 'a')
+          echo "big=$big" >> "$GITHUB_OUTPUT"
+
+      - id: native-get
+        name: "Native: read the 3 MB step output through env"
+        continue-on-error: true
+        env:
+          BIG: ${{ steps.native.outputs.big }}
+        run: test "${#BIG}" -eq 3000000
+
+      - id: relay-big
+        name: "Relay: the same 3 MB value"
+        run: |
+          head -c 3000000 /dev/zero | tr '\0' 'a' | jrelay put --name big-value
+          test "$(jrelay get --step relay-big --name big-value | wc -c)" -eq 3000000
+          echo "| 3 MB value: native step output → env | write: ${{ steps.native.outcome }}, read: ${{ steps.native-get.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 3 MB value: relay | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ environment variables
+      - id: env-put
+        name: "Put: a bundle of environment variables (including multi-line values)"
+        env:
+          APP_NAME: "mi app"
+          APP_PORT: "8080"
+          APP_URL: "https://example.com/a?b=c&d=e"
+          APP_EQUALS: "k=v=w"
+          APP_MULTI: |
+            primera línea
+            segunda línea con "comillas"
+        run: |
+          jq -n 'env | with_entries(select(.key | startswith("APP_")))' | jrelay put --name env
+
+      - id: env-load
+        name: "Get: load the bundle into the environment of later steps"
+        run: |
+          jrelay get --step env-put --name env > env.json
+          for key in $(jq -r 'keys[]' env.json); do
+            delim="EOF_$(openssl rand -hex 8)"
+            { echo "$key<<$delim"; jq -r --arg k "$key" '.[$k]' env.json; echo "$delim"; } >> "$GITHUB_ENV"
+          done
+
+      - id: env-check
+        name: "Check: variables are now regular environment variables"
+        run: |
+          test "$APP_NAME" = "mi app"
+          test $((APP_PORT + 1)) -eq 8081
+          test "$APP_URL" = "https://example.com/a?b=c&d=e"
+          test "$APP_EQUALS" = "k=v=w"
+          test "$(printf '%s' "$APP_MULTI" | wc -l)" -ge 1
+          grep -q 'comillas' <<< "$APP_MULTI"
+          echo "| Environment variable bundle (spaces, URLs, \`=\`, multi-line) → \`\$GITHUB_ENV\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ bridge to step outputs
+      - id: bridge
+        name: "Turn relay data into normal step outputs"
+        run: |
+          jrelay get --step json --name config > config.json
+          echo "region=$(jq -r .region config.json)"     >> "$GITHUB_OUTPUT"
+          echo "replicas=$(jq -r .replicas config.json)" >> "$GITHUB_OUTPUT"
+
+      - id: bridge-use
+        name: "Use them with the usual ${{ '{{' }} steps.x.outputs.y {{ '}}' }} syntax"
+        run: |
+          test "${{ steps.bridge.outputs.region }}" = "sa-east-1"
+          test "${{ steps.bridge.outputs.replicas }}" -eq 3
+          echo "| Relay data → step outputs → \`\${{ steps.x.outputs.y }}\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ secrets
+      - id: secret-put
+        name: "Secrets: a generated secret and the real GITHUB_TOKEN"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          secret=$(openssl rand -hex 24)
+          echo "::add-mask::$secret"                                  # never printed in clear
+          printf '%s' "$secret"   | jrelay put --name generated      # via stdin, never as an argument
+          printf '%s' "$GH_TOKEN" | jrelay put --name gh-token
+          echo "secret_sha=$(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "producer sees: $secret"
+
+      - id: secret-get
+        name: "Secrets: receive, mask, and use the token against the GitHub API"
+        run: |
+          secret=$(jrelay get --step secret-put --name generated)
+          echo "::add-mask::$secret"           # a consumer in ANOTHER job must also do this
+          echo "consumer sees: $secret"
+          test "$(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)" = "${{ steps.secret-put.outputs.secret_sha }}"
+          token=$(jrelay get --step secret-put --name gh-token)
+          echo "::add-mask::$token"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+                 "https://api.github.com/repos/${{ github.repository }}")
+          echo "GitHub API with the relayed token: HTTP $code"
+          test "$code" = "200"
+          echo "| Generated secret (masked with \`::add-mask::\` in both steps) | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Real \`GITHUB_TOKEN\` relayed and used against the GitHub API | ✅ HTTP $code |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ files and directories
+      - id: tree-put
+        name: "Put: a directory tree (permissions, symlink, hidden and empty entries)"
+        run: |
+          mkdir -p tree/sub/deeper tree/empty-dir
+          echo "hola" > tree/a.txt
+          printf '#!/bin/sh\necho run\n' > tree/run.sh && chmod 755 tree/run.sh
+          echo "oculto" > tree/.hidden
+          head -c 5M /dev/urandom > tree/sub/deeper/blob.bin
+          ln -s ../a.txt tree/sub/link-to-a
+          chmod 600 tree/sub/deeper/blob.bin
+          tar -C tree -cf - . | jrelay put --name tree
+
+      - id: tree-get
+        name: "Get: extract and compare the tree"
+        run: |
+          mkdir out
+          jrelay get --step tree-put --name tree | tar -C out -xf -
+          diff -r --no-dereference tree out
+          test "$(stat -c %a out/run.sh)" = 755
+          test "$(stat -c %a out/sub/deeper/blob.bin)" = 600
+          test "$(readlink out/sub/link-to-a)" = "../a.txt"
+          test -d out/empty-dir
+          echo "| Directory tree via tar (permissions, symlink, hidden file, empty dir, 5 MB blob) | ✅ identical |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ arrays, overwrite, many, parallel, Python
+      - id: lists
+        name: "Lists, overwrite, many small values, parallel puts, Python client"
+        run: |
+          printf '%s\n' alpha "beta gamma" "δέλτα" | jrelay put --name list
+          mapfile -t items < <(jrelay get --step lists --name list)
+          test "${#items[@]}" -eq 3 && test "${items[1]}" = "beta gamma"
+          echo "| Lists → bash arrays (items with spaces) | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'first'  | jrelay put --name same
+          printf 'second' | jrelay put --name same
+          test "$(jrelay get --step lists --name same)" = second
+          echo "| Overwrite the same name | ✅ last value wins |" >> "$GITHUB_STEP_SUMMARY"
+
+          start=$(date +%s%N)
+          for i in $(seq 1 200); do printf '%s' "$i" | jrelay put --name "n$i" 2>/dev/null; done
+          for i in $(seq 1 200); do test "$(jrelay get --step lists --name "n$i" 2>/dev/null)" = "$i"; done
+          ms=$(( ($(date +%s%N) - start) / 1000000 ))
+          echo "| 200 small values put + 200 get | ✅ ${ms} ms total, ~$(( ms / 400 )) ms per operation |" >> "$GITHUB_STEP_SUMMARY"
+
+          for i in $(seq 1 8); do (head -c 4M /dev/urandom | tee "p$i.bin" | jrelay put --name "par$i" 2>/dev/null) & done
+          wait
+          for i in $(seq 1 8); do jrelay get --step lists --name "par$i" 2>/dev/null | cmp - "p$i.bin"; done
+          echo "| 8 parallel 4 MB puts from one step | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+          python3 - <<'PY'
+          import json, subprocess
+          cfg = json.loads(subprocess.run(["jrelay", "get", "--step", "json", "--name", "config"],
+                                          check=True, capture_output=True).stdout)
+          cfg["replicas"] *= 2
+          subprocess.run(["jrelay", "put", "--name", "py-result"],
+                         input=json.dumps(cfg).encode(), check=True, capture_output=True)
+          PY
+          test "$(jrelay get --step lists --name py-result | jq .replicas)" -eq 6
+          echo "| Python reads and writes through the CLI | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------ end of run
+      - name: Release and stop
+        if: always()
+        run: |
+          jrelay release || true
+          kill -INT "$(cat relay.pid)" || true
+          sleep 1
+          cat relay.log
