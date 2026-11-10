@@ -1,6 +1,7 @@
 # Protocolo JRP/1 (Job Relay Protocol) — borrador para discusión
 
-Estado: **propuesta**. Nada se implementa hasta que el dueño lo apruebe.
+Estado: **arquitectura cerrada en forma provisoria (2026-11-10)**. Nada se implementa
+hasta que el dueño lo indique.
 
 ## 1. Decisiones del dueño (2026-11-08)
 
@@ -125,12 +126,20 @@ Reservados para más adelante, sin uso hoy: comandos 0x40–0x4F y campos 12–2
 - Si el PUT no declara tamaño, el servidor corta con ERROR apenas la subida pasa el
   espacio disponible y descarta lo recibido.
 
-## 8. Preguntas abiertas
+## 8. Decisiones
+
+Las marcadas "provisorio" fueron aprobadas por el dueño el 2026-11-10 para probar
+("prueba así por mientras") y pueden cambiar con lo que se aprenda.
 
 | # | Pregunta | Opciones |
 |---|---|---|
 | D1 | Memoria insuficiente | **Decidido (dueño, 2026-11-10): (a) rechazar el PUT con error claro.** El servidor revisa el tamaño declarado al inicio; si no cabe, el step falla de inmediato. Pasar a disco queda para una versión futura, sin romper el protocolo |
-| D3 | ¿GET antes del COMMIT del productor? | Entre jobs, el consumidor depende del productor con `needs:`; entre steps, los steps corren en orden. En ambos casos el productor ya terminó. Recomendado: no permitirlo; responder "no listo" |
+| D3 | ¿GET antes del COMMIT del productor? | Entre jobs, el consumidor depende del productor con `needs:`; entre steps, los steps corren en orden. En ambos casos el productor ya terminó. **Provisorio (dueño, 2026-11-10):** no se permite; se responde "no listo" |
+| D2 | Reinicio del servidor | **Provisorio (dueño, 2026-11-10):** se pierde lo que estaba en memoria; el run afectado se re-ejecuta completo |
+| D4 | Tamaño de trozo | **Provisorio:** 4 MiB por defecto, configurable |
+| D5 | Integridad | **Provisorio:** un hash BLAKE3 del mensaje completo, al subir (COMMIT) y al bajar (END); sin hash por trozo |
+| D6 | Autenticación | **Provisorio:** token OIDC de GitHub de cada job |
+| D7 | Codificador de metadatos | **Provisorio:** escrito a mano |
 | P1 | ¿Varios mensajes por step? | **Resuelta:** campo `nombre` opcional |
 | P2 | ¿Jobs de matriz? | Comparten el mismo `job_id`, así que chocarían. Hoy fuera de alcance |
 | P3 | ¿El token OIDC trae el job_id y el step_id? | **Respondida:** trae `run_id`, `run_attempt` y `check_run_id` (el job numérico de ese intento), pero no los ids del archivo. Propuesta: el servidor fija el run desde el token; `job_id` y `step_id` los declara el cliente dentro de su run, y el servidor guarda el `check_run_id` de quien escribió, para auditoría |
