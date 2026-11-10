@@ -1,0 +1,43 @@
+# Example: passing large data between steps and jobs of ONE workflow run
+# through stellaris-job-relay. Copy to .github/workflows/ in a repository that
+# uses self-hosted runners in the same network as the relay.
+#
+# PROTOTYPE: the relay does not verify GitHub OIDC tokens yet, so this example
+# uses an insecure dev token built from the run id. Do not expose the relay.
+name: relay-example
+
+on: workflow_dispatch
+
+env:
+  JRELAY_ENDPOINT: tcp://relay.internal:7700
+  JRELAY_TOKEN: dev:${{ github.run_id }}:${{ github.run_attempt }}
+  # JRELAY_SERVER_PUBLIC_KEY: ${{ vars.JRELAY_SERVER_PUBLIC_KEY }}   # enables CURVE
+
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - id: compile                       # the step id names the message
+        run: |
+          make dist/app.tar
+          jrelay put --name app.tar --file dist/app.tar
+
+      - id: package                       # later step, same job: --job not needed
+        run: |
+          jrelay get --step compile --name app.tar --out app.tar
+          ./package.sh app.tar
+
+  test:
+    needs: build                          # starts after build: the message is ready
+    runs-on: self-hosted
+    steps:
+      - run: |
+          jrelay get --job build --step compile --name app.tar --out app.tar
+          ./run-tests.sh app.tar
+
+  cleanup:                                # frees the run's memory on the relay
+    needs: [build, test]
+    if: always()
+    runs-on: self-hosted
+    steps:
+      - run: jrelay release

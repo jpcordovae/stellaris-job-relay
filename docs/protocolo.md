@@ -1,7 +1,7 @@
 # Protocolo JRP/1 (Job Relay Protocol) — borrador para discusión
 
-Estado: **arquitectura cerrada en forma provisoria (2026-11-10)**. Nada se implementa
-hasta que el dueño lo indique.
+Estado: **arquitectura cerrada en forma provisoria (2026-11-10)**. Prototipo
+implementado el 2026-11-10 con autorización del dueño (ver README).
 
 ## 1. Decisiones del dueño (2026-11-08)
 
@@ -78,14 +78,15 @@ Frame 3+ Datos crudos, un frame por trozo (solo en DATA)
 
 | Código | Comando | Dirección | Metadatos |
 |---|---|---|---|
-| 0x01 | HELLO | C → S | token |
-| 0x02 | WELCOME | S → C | tamaño máximo, trozo sugerido |
+| 0x01 | HELLO | C → S | token, job_id (el job que se conecta) |
+| 0x02 | WELCOME | S → C | tamaño_total (máximo por mensaje), tamaño_trozo |
 | 0x10 | PUT | C → S | job_id, step_id, nombre, tamaño_total |
 | 0x11 | DATA | ambos | offset, fin |
 | 0x12 | COMMIT | C → S | digest |
 | 0x20 | GET | C → S | job_id (opcional), step_id, nombre, offset (para reanudar) |
 | 0x21 | CREDIT | ambos | crédito |
-| 0x22 | END | S → C | digest |
+| 0x22 | END | S → C | tamaño_total, digest |
+| 0x30 | RELEASE | C → S | — (libera todos los mensajes del run; lo usa el paso final de limpieza) |
 | 0x7E | OK | S → C | crédito inicial (tras PUT) |
 | 0x7F | ERROR | S → C | código, texto |
 
@@ -102,8 +103,13 @@ Frame 3+ Datos crudos, un frame por trozo (solo en DATA)
 | 9 | token | LEN |
 | 10 | step_id | LEN |
 | 11 | nombre | LEN |
+| 12 | tamaño_trozo | VARINT |
 
-Reservados para más adelante, sin uso hoy: comandos 0x40–0x4F y campos 12–20.
+Reservados para más adelante, sin uso hoy: comandos 0x40–0x4F y campos 13–20.
+
+**Regla del servidor:** en PUT, el `job_id` (si viene) debe ser el mismo del HELLO: un
+job solo escribe sus propios mensajes. En GET, si no viene `job_id`, se entiende el
+propio (pedido entre steps del mismo job).
 
 ## 6. Flujos
 
