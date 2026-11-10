@@ -39,6 +39,58 @@ jrelay release
 Códigos de salida: 0 bien, 1 error, 2 uso, 3 no existe, 4 el run ya terminó,
 5 no cabe en la memoria del relay.
 
+## Usar como GitHub Action desde otro repositorio
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: jpcordovae/stellaris-job-relay@v0      # levanta el relay dentro de este job
+        with: { command: start }
+
+      - id: compile
+        run: make dist/app.tar
+
+      - uses: jpcordovae/stellaris-job-relay@v0      # sube un archivo de cualquier tamaño
+        with: { command: put, step: compile, name: app.tar, file: dist/app.tar }
+
+      - uses: jpcordovae/stellaris-job-relay@v0      # sube un valor; mask: true lo oculta en los logs
+        with: { command: put, step: compile, name: api-key, value: "${{ secrets.API_KEY }}", mask: true }
+
+      - id: cfg                                      # lo recibe como output normal
+        uses: jpcordovae/stellaris-job-relay@v0
+        with: { command: get, step: compile, name: api-key, mask: true }
+
+      - uses: jpcordovae/stellaris-job-relay@v0      # o como archivo, byte a byte
+        with: { command: get, step: compile, name: app.tar, out: app.tar }
+
+      - if: always()
+        uses: jpcordovae/stellaris-job-relay@v0      # libera la memoria y detiene el relay
+        with: { command: release }
+```
+
+| Entrada | Uso |
+|---|---|
+| `command` | `start`, `put`, `get` o `release` |
+| `step` | En `put`: el `id` del step que llama (GitHub no se lo entrega a las actions). En `get`: el step productor |
+| `name` | Nombre del mensaje (por defecto `default`) |
+| `job` | En `get`: job productor (por defecto, el propio) |
+| `file` / `value` | En `put`: archivo o valor literal |
+| `out` | En `get`: archivo de destino. Sin él, el contenido queda en el output `value` |
+| `mask` | `true` para registrar el valor con `::add-mask::` |
+| `endpoint`, `token`, `server-public-key` | Para un relay externo (runners propios). Por defecto: `tcp://127.0.0.1:7700` y token de desarrollo |
+| `memory-limit` | En `start`: memoria del relay (por defecto `1G`) |
+
+Salidas: `value`, `size`, `digest` (BLAKE3).
+
+La primera vez que se usa una versión, la action compila el relay (~30 s) y lo guarda
+en la caché de Actions; después tarda unos segundos. Requiere un runner Ubuntu con `sudo`.
+
+**Repositorio privado:** para que otros repositorios de la cuenta puedan usar la
+action, en este repositorio debe estar activado *Settings → Actions → General →
+Access → "Accessible from repositories owned by the user"*.
+
 ## Compilar y probar
 
 Requiere CMake ≥ 3.25, GCC 13 o superior (Clang 18 con la librería estándar de GCC 13 no

@@ -1,0 +1,129 @@
+name: "Stellaris Job Relay"
+description: "Pass data of any size and type between steps of a workflow run, beyond GitHub's output limits (prototype)."
+author: "Stellaris SpA"
+branding:
+  icon: "repeat"
+  color: "orange"
+
+# PROTOTYPE: the relay does not verify GitHub OIDC tokens yet. It runs in an
+# insecure dev mode; keep it on 127.0.0.1 (command: start) or a closed network.
+
+inputs:
+  command:
+    description: "start | put | get | release"
+    required: true
+  step:
+    description: "Step that owns the message. put: the id of the calling step (GitHub does not pass it to actions). get: the producer step."
+    required: false
+    default: ""
+  name:
+    description: "Message name within the step (letters, digits, - _ .)"
+    required: false
+    default: "default"
+  job:
+    description: "get: job that produced the message (default: this job)"
+    required: false
+    default: ""
+  file:
+    description: "put: file to upload"
+    required: false
+    default: ""
+  value:
+    description: "put: literal value to upload (use for small values; secrets are masked)"
+    required: false
+    default: ""
+  out:
+    description: "get: write the message to this file (exact bytes). Without it, the message is returned in the `value` output"
+    required: false
+    default: ""
+  mask:
+    description: "put/get: register the value with ::add-mask:: so it never shows in logs"
+    required: false
+    default: "false"
+  endpoint:
+    description: "Relay address"
+    required: false
+    default: "tcp://127.0.0.1:7700"
+  token:
+    description: "Job token. Empty: prototype dev token built from the run id (INSECURE)"
+    required: false
+    default: ""
+  server-public-key:
+    description: "Z85 public key of the relay; enables CURVE encryption"
+    required: false
+    default: ""
+  memory-limit:
+    description: "start: memory budget of the relay started in this job (e.g. 512M, 2G)"
+    required: false
+    default: "1G"
+
+outputs:
+  value:
+    description: "get without `out`: the message content (trailing newlines removed)"
+    value: ${{ steps.run.outputs.value }}
+  size:
+    description: "put/get: size in bytes"
+    value: ${{ steps.run.outputs.size }}
+  digest:
+    description: "put/get: BLAKE3 digest (hex)"
+    value: ${{ steps.run.outputs.digest }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: check
+      shell: bash
+      run: |
+        if [ -n "${JRELAY_BIN_DIR:-}" ] && [ -x "$JRELAY_BIN_DIR/jrelay" ]; then
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "installed=false" >> "$GITHUB_OUTPUT"
+          hash=$(cd "$GITHUB_ACTION_PATH" && find src CMakeLists.txt -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+        fi
+
+    - id: cache
+      if: steps.check.outputs.installed != 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.jrelay/bin
+        key: jrelay-${{ runner.os }}-${{ runner.arch }}-${{ steps.check.outputs.hash }}
+
+    - if: steps.check.outputs.installed != 'true'
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        bin="$HOME/.jrelay/bin"
+        if [ "$CACHE_HIT" = "true" ]; then
+          sudo apt-get install -y -qq libzmq5 >/dev/null
+        else
+          echo "::group::Build jrelay (first use with this version; cached afterwards)"
+          sudo apt-get update -qq && sudo apt-get install -y -qq libzmq3-dev cppzmq-dev >/dev/null
+          cmake -S "$GITHUB_ACTION_PATH" -B "$RUNNER_TEMP/jrelay-build" -DCMAKE_BUILD_TYPE=Release -DJRELAY_BUILD_TESTS=OFF
+          cmake --build "$RUNNER_TEMP/jrelay-build" -j
+          mkdir -p "$bin"
+          cp "$RUNNER_TEMP/jrelay-build/jrelay" "$RUNNER_TEMP/jrelay-build/jrelay-server" "$bin/"
+          echo "::endgroup::"
+        fi
+        echo "JRELAY_BIN_DIR=$bin" >> "$GITHUB_ENV"
+        echo "$bin" >> "$GITHUB_PATH"
+
+    - id: run
+      shell: bash
+      env:
+        IN_COMMAND: ${{ inputs.command }}
+        IN_STEP: ${{ inputs.step }}
+        IN_NAME: ${{ inputs.name }}
+        IN_JOB: ${{ inputs.job }}
+        IN_FILE: ${{ inputs.file }}
+        IN_VALUE: ${{ inputs.value }}
+        IN_OUT: ${{ inputs.out }}
+        IN_MASK: ${{ inputs.mask }}
+        IN_ENDPOINT: ${{ inputs.endpoint }}
+        IN_TOKEN: ${{ inputs.token }}
+        IN_SERVER_KEY: ${{ inputs.server-public-key }}
+        IN_MEMORY: ${{ inputs.memory-limit }}
+      run: |
+        PATH="${JRELAY_BIN_DIR:-$HOME/.jrelay/bin}:$PATH" bash "$GITHUB_ACTION_PATH/action/jrelay-action.sh"
