@@ -4,8 +4,9 @@ Nada de este documento está decidido. Cada punto se cierra con un ADR en `docs/
 
 ## Problema
 
-GitHub Actions limita el traspaso de datos entre jobs (outputs pequeños; artifacts y
-caché con cuotas y latencia). Los equipos con pipelines pesados (binarios, datasets,
+GitHub Actions limita el traspaso de datos entre steps y entre jobs de un mismo run
+(outputs de máximo 1 MB por job y 50 MB por run; artifacts y caché con cuotas y
+latencia). Los equipos con pipelines pesados (binarios, datasets,
 imágenes) necesitan mover gigabytes entre jobs, rápido y dentro de su propia red.
 
 ## Restricciones ya conocidas
@@ -27,8 +28,15 @@ imágenes) necesitan mover gigabytes entre jobs, rápido y dentro de su propia r
 - [ ] ¿Integridad: hash por chunk y por blob (BLAKE3 / SHA-256)?
 
 ### Persistencia
-- [ ] ¿Backend: disco local con mmap, o almacenamiento externo (S3/MinIO)?
-- [ ] ¿Política de retención y expiración (TTL por run)?
+- [x] **Decidido (dueño, 2026-11-08):** los datos se guardan en memoria siempre que sea
+      posible, como binario opaco sin interpretar su formato, con un protocolo propio.
+      Propuesta en [protocolo.md](protocolo.md).
+- [ ] ¿Qué hacer cuando la memoria no alcanza o el servidor se reinicia? (D1 y D2 en
+      protocolo.md)
+- [x] **Decidido (dueño, 2026-11-08):** solo mensajes entre steps y jobs del mismo workflow run, identificados por run_id, job_id, step_id y nombre; los datos
+      viven lo que vive el run. Traspaso entre runs: más adelante. Ver §1b de
+      [protocolo.md](protocolo.md).
+- [x] **Decidido (dueño, 2026-11-08):** los datos no sobreviven al workflow run (D8).
 - [ ] ¿Un nodo, o varios con replicación?
 
 ### Seguridad
