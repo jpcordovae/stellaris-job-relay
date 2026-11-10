@@ -120,13 +120,16 @@ Reservados para más adelante, sin uso hoy: comandos 0x40–0x4F y campos 12–2
 - Subida en curso: `std::unique_ptr` (un dueño). Al confirmar: `std::shared_ptr<const
   Blob>` (el índice y cada descarga en curso lo comparten; borrar el run no libera
   memoria que se está enviando).
-- Tope de memoria configurable, revisado en el PUT con el tamaño declarado (D1).
+- Tope de memoria configurable, revisado en el PUT con el tamaño declarado. Si no cabe,
+  ERROR inmediato (D1). Los datos viven solo en memoria.
+- Si el PUT no declara tamaño, el servidor corta con ERROR apenas la subida pasa el
+  espacio disponible y descarta lo recibido.
 
 ## 8. Preguntas abiertas
 
 | # | Pregunta | Opciones |
 |---|---|---|
-| D1 | Memoria insuficiente | (a) rechazar el PUT con error claro; (b) pasar a disco; (c) según configuración |
+| D1 | Memoria insuficiente | **Decidido (dueño, 2026-11-10): (a) rechazar el PUT con error claro.** El servidor revisa el tamaño declarado al inicio; si no cabe, el step falla de inmediato. Pasar a disco queda para una versión futura, sin romper el protocolo |
 | D3 | ¿GET antes del COMMIT del productor? | Entre jobs, el consumidor depende del productor con `needs:`; entre steps, los steps corren en orden. En ambos casos el productor ya terminó. Recomendado: no permitirlo; responder "no listo" |
 | P1 | ¿Varios mensajes por step? | **Resuelta:** campo `nombre` opcional |
 | P2 | ¿Jobs de matriz? | Comparten el mismo `job_id`, así que chocarían. Hoy fuera de alcance |
