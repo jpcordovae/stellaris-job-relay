@@ -47,7 +47,12 @@ void Server::run() {
   last_housekeeping_ = Clock::now();
   while (!stop_.load(std::memory_order_relaxed)) {
     zmq::pollitem_t items[] = {{socket_.handle(), 0, ZMQ_POLLIN, 0}};
-    zmq::poll(items, 1, kPollInterval);
+    try {
+      zmq::poll(items, 1, kPollInterval);
+    } catch (const zmq::error_t& e) {
+      if (e.num() == EINTR) continue;  // a signal (e.g. SIGINT to stop): re-check stop_
+      throw;
+    }
     if ((items[0].revents & ZMQ_POLLIN) != 0) drain_incoming();
 
     const auto now = Clock::now();
