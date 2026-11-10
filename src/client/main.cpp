@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
       if (!r) return fail(r.error());
       std::cerr << "jrelay: got " << job.value_or(*my_job) << "/" << *step << "/" << msg_name << " "
                 << r->size << " bytes, " << mib_per_s(r->size, std::chrono::steady_clock::now() - start)
-                << " MiB/s, blake3 verified\n";
+                << " MiB/s, blake3 " << jrelay::to_hex(r->digest) << " verified\n";
       return kOk;
     }
 
