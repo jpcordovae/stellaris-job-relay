@@ -29,7 +29,8 @@ Es el mismo modelo que los outputs de GitHub (`steps.<step>.outputs.<nombre>` de
 del job, `needs.<job>.outputs.<nombre>` entre jobs), pero sin límite de tamaño y con
 datos binarios.
 
-- **Identidad del mensaje = (run_id, job_id, step_id, nombre).**
+- **Identidad del mensaje = (run_id, job_id, step_id, nombre).** Confirmada por el
+  dueño el 2026-11-10.
   - `run_id`: lo fija el servidor desde el token del job. El cliente no lo elige.
   - `job_id`: el identificador del job en el archivo del workflow (`jobs.<job_id>`,
     disponible como `github.job`), el mismo que el consumidor usa en `needs:`.
